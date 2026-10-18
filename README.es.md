@@ -100,7 +100,7 @@ Probado en el equipo de referencia (con la versión local anterior de este mismo
 
 No probado, o no repetido tras los últimos cambios:
 
-- **Esta versión renombrada ya instalada** (paquete `monitor-t2`, servicio `monitor-t2-fand`, migración de ajustes desde el nombre anterior). Solo se comprobó compilación, construcción del paquete y renderizado fuera de pantalla.
+- **La versión 1.1.0 instalada desde su propio paquete.** Una compilación anterior del paquete renombrado (`monitor-t2` 1.0.0-1) sí se instaló y funcionó: el servicio `monitor-t2-fand` estaba activo y la app leía vatios reales de él. Los cambios de la 1.1.0 se ejecutaron después desde la carpeta del repositorio, no desde un paquete instalado. La migración de ajustes solo se probó con un directorio personal temporal.
 - El seguro de 95 °C tras corregirlo (una versión anterior volvía a automático y hacía que el modo «Frío» se apagara solo a los ~10 s).
 - El ventilador 2 por separado, el modo «Manual» con el deslizador de porcentaje desde el popup, suspender/reanudar con ventiladores en manual, inicio con la sesión, Fahrenheit.
 - El interruptor de CPU Turbo (escribe `/sys/devices/system/cpu/intel_pstate/no_turbo` a través del servicio).

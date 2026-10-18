@@ -1,6 +1,6 @@
 # Maintainer: ecabreraperalta93
 pkgname=monitor-t2
-pkgver=1.0.0
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="Menu-bar resource monitor for T2 Macs on Linux: CPU, GPU, RAM, disk, network, battery, watts, sensors and fan control"
 arch=('any')

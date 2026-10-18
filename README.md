@@ -100,7 +100,7 @@ Tested on the reference machine (with the earlier local build of this same code,
 
 Not tested, or not re-checked after the last changes:
 
-- **This renamed build as installed** (package `monitor-t2`, service `monitor-t2-fand`, config migration from the earlier local name). Only compilation, a package build and offscreen rendering were checked.
+- **Version 1.1.0 installed from its own package.** An earlier build of the renamed package (`monitor-t2` 1.0.0-1) was installed and ran: the service `monitor-t2-fand` was active and the app read real watts from it. The 1.1.0 changes were then run from the repository folder, not from an installed package. Config migration was only tested with a temporary home directory.
 - The 95 °C safeguard after it was fixed (an earlier version fell back to automatic, which made the "Cool" mode stop by itself after ~10 s).
 - Fan 2 on its own, "Manual" with the percentage slider from the popup, suspend/resume with fans in manual, launch at login, Fahrenheit.
 - The CPU Turbo switch (it writes `/sys/devices/system/cpu/intel_pstate/no_turbo` through the service).
