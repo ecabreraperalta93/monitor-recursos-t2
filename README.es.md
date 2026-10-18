@@ -26,7 +26,7 @@ Modos de ventilador, independientes por ventilador: **Automático** (firmware), 
 
 ### Los vatios por aplicación son una estimación
 
-Linux no tiene un medidor de consumo por proceso. La app reparte los vatios medidos del procesador según el uso de CPU de cada aplicación, y los de la GPU según el uso de GPU de cada una (se lee de `/proc/<pid>/fdinfo`, solo de tus procesos). Lo que ese reparto no explica (pantalla, SSD, ventiladores, reposo) no se asigna a nadie, así que la lista suma menos que el total del sistema.
+Linux no tiene un medidor de consumo por proceso. La app reparte los vatios medidos del procesador entre las aplicaciones según su uso de CPU, y los de la GPU según su uso de GPU (se lee de `/proc/<pid>/fdinfo`, solo de tus procesos). El consumo en reposo se reparte entre las aplicaciones activas, así que una cuota exagera lo que cuesta una app sobre un equipo en reposo; lo que no es CPU ni GPU (pantalla, SSD, ventiladores) no se asigna a nadie.
 
 ## Requisitos
 

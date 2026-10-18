@@ -26,7 +26,7 @@ Fan modes, per fan and independent: **Automatic** (firmware), **Manual** (slider
 
 ### Watts per application is an estimate
 
-Linux has no per-process power meter. The app splits the measured CPU-package watts by each application's CPU use, and the measured GPU watts by each application's GPU use (read from `/proc/<pid>/fdinfo`, your own processes only). Power the shares cannot explain (screen, SSD, fans, idle) is not assigned to anyone, so the list adds up to less than the system total.
+Linux has no per-process power meter. The app shares out the measured CPU-package watts among applications by CPU use, and the measured GPU watts by GPU use (read from `/proc/<pid>/fdinfo`, your own processes only). Idle power is spread over the busy applications, so a share overstates what an app costs on top of an idle machine; power that is neither CPU nor GPU (screen, SSD, fans) is not assigned to anyone.
 
 ## Requirements
 

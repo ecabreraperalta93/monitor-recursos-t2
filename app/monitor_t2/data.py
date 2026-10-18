@@ -364,16 +364,19 @@ class Sampler:
         return out
 
     def _apps(self, power, gpu, cpu_groups, ncpu, now):
-        """Estimated watts per application name: package power split by CPU use, GPU power split by GPU use.
+        """Estimated watts per application name: the whole CPU-package power is shared out by CPU use, the GPU
+        power by GPU use.
 
-        Linux has no per-process power meter, so this is a share of the measured CPU and GPU watts. Power the
-        shares cannot explain (screen, SSD, fans, idle) is not assigned to anyone.
+        Linux has no per-process power meter, so these are shares of the measured watts (idle power is spread
+        over the busy applications, so a share overstates what an app costs on top of an idle machine). Power
+        that is neither CPU nor GPU (screen, SSD, fans) is not assigned to anyone.
         """
         pkg = power["cpu_pkg"]
         apps = {}
-        if pkg is not None:
+        total = sum(cpu_groups.values())
+        if pkg is not None and total > 0:
             for n, v in cpu_groups.items():
-                w = pkg * min(100.0, v / ncpu) / 100.0
+                w = pkg * v / total
                 if w >= 0.01:
                     apps[n] = [w, 0.0]
         if self.detail:

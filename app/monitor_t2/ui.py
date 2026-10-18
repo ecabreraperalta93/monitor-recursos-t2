@@ -684,8 +684,8 @@ class Power(Module):
         self.sec("Aplicaciones (estimado)")
         self.top = TopList(8)
         self.box.pack_start(self.top, False, False, 0)
-        self.how = lbl("Estimación: reparte los vatios medidos de CPU y GPU según lo que usa cada aplicación. "
-                       "El resto (pantalla, SSD, ventiladores, reposo) no se asigna a ninguna.", "sub")
+        self.how = lbl("Estimación: reparte los vatios medidos del procesador y de la GPU entre las aplicaciones "
+                       "según su uso (incluye el consumo en reposo). Pantalla, SSD y ventiladores no se asignan.", "sub")
         self.how.set_line_wrap(True)
         self.box.pack_start(self.how, False, False, 0)
         self.note = lbl("", "sub")
