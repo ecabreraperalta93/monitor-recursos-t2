@@ -69,8 +69,9 @@ class Item:
         self.name = conn.get_unique_name()
         self.id = f"monitor-t2-{module_name}"
         self.title = f"Monitor T2 – {title}"
-        self.pix = render("", "…", 0, draw.BLUE)
+        self.key = None
         self.tip = title
+        self.set_pixmap(render("", "…", 0, draw.BLUE))
         self.on_activate, self.on_context = on_activate, on_context
         self.reg = conn.register_object("/StatusNotifierItem", NODE.interfaces[0], self._call, self._get, None)
         GLib.timeout_add(300, self._register)
@@ -107,7 +108,7 @@ class Item:
         if prop in ("IconName", "OverlayIconName", "AttentionIconName"):
             return V("s", "")
         if prop == "IconPixmap":
-            return V("a(iiay)", [(SIZE, SIZE, self.pix)])
+            return self.pixvar
         if prop == "ToolTip":
             return V("(sa(iiay)ss)", ("", [], self.tip, ""))
         if prop == "ItemIsMenu":
@@ -116,8 +117,20 @@ class Item:
             return V("o", "/NO_DMENU")
         return None
 
+    def set_pixmap(self, pix):
+        # GLib.Variant("a(iiay)", ...) takes ~100 ms for a 16 KB icon (it walks the bytes in Python) and Plasma asks
+        # for the property several times a second, which made the whole app use ~60 % of a core. Wrapping the
+        # bytes directly costs ~0.05 ms and gives an identical value.
+        ay = GLib.Variant.new_from_bytes(GLib.VariantType("ay"), GLib.Bytes.new(pix), True)
+        tup = GLib.Variant.new_tuple(GLib.Variant("i", SIZE), GLib.Variant("i", SIZE), ay)
+        self.pixvar = GLib.Variant.new_array(GLib.VariantType("(iiay)"), [tup])
+
     def set(self, label, value, frac, color, tip=""):
-        self.pix = render(label, value, frac, color)
+        key = (label, value, round(frac * 50), tuple(color), tip)  # skip redraws when nothing visible changed
+        if key == self.key:
+            return
+        self.key = key
+        self.set_pixmap(render(label, value, frac, color))
         self.tip = tip or self.title
         self.conn.emit_signal(None, "/StatusNotifierItem", "org.kde.StatusNotifierItem", "NewIcon", None)
 
