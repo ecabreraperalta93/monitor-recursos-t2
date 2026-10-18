@@ -96,6 +96,58 @@ class TopList(Gtk.Grid):
             b.set_text(it[1])
 
 
+class AppPowerList(Gtk.Grid):
+    """Rows of: application name, proportional bar, watts."""
+
+    def __init__(self, n=12):
+        super().__init__(column_spacing=8, row_spacing=5)
+        self.rows = []
+        for i in range(n):
+            name = lbl("", "k")
+            name.set_hexpand(True)
+            name.set_ellipsize(3)
+            name.set_max_width_chars(20)
+            st = {"f": 0.0, "c": BLUE}
+
+            def paint(cr, w, h, st=st):
+                draw.rounded(cr, 0, 0, w, h, h / 2)
+                draw.rgba(cr, T["track"])
+                cr.fill()
+                if st["f"] > 0:
+                    draw.rounded(cr, 0, 0, max(h, w * min(1.0, st["f"])), h, h / 2)
+                    draw.rgba(cr, st["c"])
+                    cr.fill()
+            bar = Canvas(70, 8, paint)
+            bar.set_valign(Gtk.Align.CENTER)
+            bar.set_no_show_all(True)  # empty rows keep no bar, show_all() must not bring it back
+            val = lbl("", "v", 1.0)
+            val.set_width_chars(7)
+            self.attach(name, 0, i, 1, 1)
+            self.attach(bar, 1, i, 1, 1)
+            self.attach(val, 2, i, 1, 1)
+            self.rows.append((name, bar, val, st))
+
+    def show_rows(self, rows):
+        """rows: list of (name, watts, colour). The longest bar is the biggest consumer."""
+        top = max([r[1] for r in rows] + [0.001])
+        for i, (name, bar, val, st) in enumerate(self.rows):
+            if i < len(rows):
+                n, w, c = rows[i]
+                name.set_text(n)
+                val.set_text(f"{w:.1f} W")
+                st["f"], st["c"] = w / top, c
+            else:
+                name.set_text("")
+                val.set_text("")
+                st["f"] = 0.0
+            bar.set_visible(i < len(rows))
+            bar.queue_draw()
+
+    def show_message(self, text):
+        self.show_rows([])
+        self.rows[0][0].set_text(text)
+
+
 class Module:
     name = ""
     title = ""
@@ -623,6 +675,7 @@ class Sensors(Module):
             self.fan_box.pack_start(lbl("No se detectaron ventiladores", "sub"), False, False, 0)
         self.err = lbl("", "sub")
         self.err.set_line_wrap(True)
+        self.err.set_max_width_chars(40)
         self.fan_box.pack_start(self.err, False, False, 0)
         groups = {}
         for key, _v in s["temps"]:
@@ -664,16 +717,21 @@ def watts(v, digits=1):
 
 
 class Power(Module):
-    """Power draw in watts, watts for the whole system and per application."""
+    """Watts per application first, then the totals (the total system power is also the tray icon)."""
     name, title = "Power", "Consumo"
-    REF_W = 100.0  # ring scale; the 16-inch MacBook Pro charger is 96 W
+    REF_W = 100.0  # tray bar scale; the 16-inch MacBook Pro charger is 96 W
 
     def build(self):
         self.s = {}
-        self.canvas(100, self.rings)
-        self.sec("Historial")
-        self.canvas(70, lambda cr, w, h: draw.chart(cr, w, h, [(self.sampler.h["power"], ORANGE)], self.REF_W))
-        self.sec("Detalles")
+        self.sec("Aplicaciones (estimado)")
+        self.apps = AppPowerList(12)
+        self.box.pack_start(self.apps, False, False, 0)
+        self.how = lbl("Estimación: reparte los vatios medidos del procesador y de la GPU entre las aplicaciones "
+                       "según su uso (incluye el consumo en reposo). Pantalla, SSD y ventiladores no se asignan.", "sub")
+        self.how.set_line_wrap(True)
+        self.how.set_max_width_chars(40)
+        self.box.pack_start(self.how, False, False, 0)
+        self.sec("Totales")
         self.kv = KV()
         self.i_sys = self.kv.add("Sistema total", ORANGE)
         self.i_dc = self.kv.add("Entrada del cargador")
@@ -681,25 +739,12 @@ class Power(Module):
         self.i_dram = self.kv.add("Memoria RAM")
         self.i_gpu = self.kv.add("GPU dedicada")
         self.box.pack_start(self.kv, False, False, 0)
-        self.sec("Aplicaciones (estimado)")
-        self.top = TopList(8)
-        self.box.pack_start(self.top, False, False, 0)
-        self.how = lbl("Estimación: reparte los vatios medidos del procesador y de la GPU entre las aplicaciones "
-                       "según su uso (incluye el consumo en reposo). Pantalla, SSD y ventiladores no se asignan.", "sub")
-        self.how.set_line_wrap(True)
-        self.box.pack_start(self.how, False, False, 0)
+        self.sec("Historial (sistema)")
+        self.canvas(60, lambda cr, w, h: draw.chart(cr, w, h, [(self.sampler.h["power"], ORANGE)], self.REF_W))
         self.note = lbl("", "sub")
         self.note.set_line_wrap(True)
+        self.note.set_max_width_chars(40)
         self.box.pack_start(self.note, False, False, 0)
-
-    def rings(self, cr, w, h):
-        p = (self.s or {}).get("power")
-        if not p:
-            return
-        sysw = p["system"]
-        col = GREEN if (sysw or 0) < 50 else ORANGE if (sysw or 0) < 80 else RED
-        draw.ring(cr, w / 2, 50, 40, (sysw or 0) / self.REF_W, col, 8,
-                  "–" if sysw is None else f"{sysw:.0f}W", "Sistema", 22)
 
     def update(self, s):
         self.s = s
@@ -711,11 +756,11 @@ class Power(Module):
         self.kv.set(self.i_gpu, watts(p["gpu"]))
         apps = p["apps"]
         if not apps["has_cpu"]:
-            self.top.set([("Sin vatios de CPU (falta monitor-t2-fand)", "")])
+            self.apps.show_message("Sin vatios de CPU (falta monitor-t2-fand)")
         elif not apps["rows"]:
-            self.top.set([("Ninguna aplicación destaca", "")])
+            self.apps.show_message("Ninguna aplicación destaca")
         else:
-            self.top.set([(r["name"], f"{r['w']:.1f} W") for r in apps["rows"]])
+            self.apps.show_rows([(r["name"], r["w"], GREEN if r["gpu"] > r["cpu"] else BLUE) for r in apps["rows"]])
         if not p["daemon"]:
             self.note.set_text("El servicio monitor-t2-fand no responde: sin CPU, RAM ni sistema total. "
                                "Se muestran solo la GPU dedicada y la batería.")

@@ -395,7 +395,7 @@ class Sampler:
                     apps.setdefault(n, [0.0, 0.0])[1] += gw * b / tot
         rows = [{"name": n, "w": c + g, "cpu": c, "gpu": g} for n, (c, g) in apps.items() if c + g >= 0.05]
         rows.sort(key=lambda r: -r["w"])
-        return {"rows": rows[:8], "has_cpu": pkg is not None, "gpu_scanned": self.detail}
+        return {"rows": rows[:12], "has_cpu": pkg is not None, "gpu_scanned": self.detail}
 
     @staticmethod
     def _psi():
