@@ -1,0 +1,2 @@
+#!/bin/sh
+exec env PYTHONPATH=/usr/lib/monitor-t2 python3 -m monitor_t2 "$@"

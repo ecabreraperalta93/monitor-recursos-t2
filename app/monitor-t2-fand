@@ -1,0 +1,352 @@
+#!/usr/bin/python3 -I
+"""monitor-t2-fand: privileged fan-control daemon for Monitor de Recursos T2.
+
+Listens on a unix socket; only members of group `wheel` (or root) may talk to it.
+Requests are strict JSON; RPM is always clamped to the fan's min/max reported by the SMC.
+On exit fans are returned to automatic (firmware) control; if the CPU gets too hot they are forced to max.
+"""
+import glob
+import grp
+import json
+import os
+import pwd
+import signal
+import socket
+import socketserver
+import struct
+import sys
+import threading
+import time
+
+SOCK_DIR = "/run/monitor-t2"
+SOCK = SOCK_DIR + "/fand.sock"
+GROUP = "wheel"
+EMERGENCY_C = 95.0
+LOCK = threading.Lock()
+STATE = {}  # fan id -> {"mode": auto|manual|curve, "rpm": int, "curve": {...}}
+
+
+def find_dir():
+    for p in glob.glob("/sys/class/hwmon/hwmon*/device/fan1_manual"):
+        return os.path.dirname(p)
+    return None
+
+
+SMC = find_dir()
+
+
+def rd(path, default=None):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def wr(path, value):
+    with open(path, "w") as f:
+        f.write(str(value))
+
+
+def fans():
+    out = []
+    for i in range(1, 8):
+        if SMC and os.path.exists(f"{SMC}/fan{i}_input"):
+            out.append(i)
+    return out
+
+
+def limits(i):
+    return int(rd(f"{SMC}/fan{i}_min", 0)), int(rd(f"{SMC}/fan{i}_max", 0))
+
+
+def cpu_temp():
+    vals = []
+    for n in range(1, 80):
+        lab = rd(f"{SMC}/temp{n}_label")
+        if lab is None and not os.path.exists(f"{SMC}/temp{n}_input"):
+            break
+        if lab and lab.startswith("TC") and lab.endswith("C") and len(lab) == 4:
+            try:
+                v = int(rd(f"{SMC}/temp{n}_input", 0)) / 1000.0
+                if v > 1:
+                    vals.append(v)
+            except ValueError:
+                pass
+    return max(vals) if vals else None
+
+
+def set_auto(i):
+    try:
+        wr(f"{SMC}/fan{i}_manual", 0)
+    except OSError:
+        pass
+    STATE[i] = {"mode": "auto"}
+
+
+def set_rpm(i, rpm):
+    lo, hi = limits(i)
+    rpm = max(lo, min(hi, int(rpm)))
+    wr(f"{SMC}/fan{i}_manual", 1)
+    wr(f"{SMC}/fan{i}_output", rpm)
+    return rpm
+
+
+TURBO = "/sys/devices/system/cpu/intel_pstate/no_turbo"
+
+
+def turbo_enabled():
+    """True/False if the CPU boost can be controlled (intel_pstate), None otherwise."""
+    v = rd(TURBO)
+    return None if v not in ("0", "1") else v == "0"
+
+
+def set_turbo(enabled):
+    wr(TURBO, 0 if enabled else 1)
+    return turbo_enabled()
+
+
+RAPL = "/sys/class/powercap"
+RAPL_DOMAINS = {"package-0": "package", "core": "core", "uncore": "uncore", "dram": "dram"}
+# SMC power keys we try to read (name -> meaning). Only keys that exist on the machine are used.
+SMC_POWER_KEYS = ("PSTR", "PDTR", "PCPT", "PCPC", "PCPG", "PPBR")
+PLOCK = threading.Lock()
+POWER = {"rapl": {}, "smc": {}, "smc_keys_found": [], "t": 0.0}
+
+
+def smc_decode(typ, raw):
+    """Decode an SMC value. 'flt' is a little-endian float, 'spXY'/'fpXY' fixed point and 'uiN' big-endian integers."""
+    try:
+        if typ == "flt" and len(raw) >= 4:
+            return struct.unpack("<f", raw[:4])[0]
+        if len(typ) == 4 and typ[:2] == "sp" and len(raw) >= 2:
+            return struct.unpack(">h", raw[:2])[0] / float(1 << int(typ[3], 16))
+        if len(typ) == 4 and typ[:2] == "fp" and len(raw) >= 2:
+            return struct.unpack(">H", raw[:2])[0] / float(1 << int(typ[3], 16))
+        if typ == "ui8" and raw:
+            return float(raw[0])
+        if typ == "ui16" and len(raw) >= 2:
+            return float(struct.unpack(">H", raw[:2])[0])
+        if typ == "ui32" and len(raw) >= 4:
+            return float(struct.unpack(">I", raw[:4])[0])
+    except (struct.error, ValueError):
+        pass
+    return None
+
+
+def smc_power_index():
+    """Walk the SMC key list once: name -> index for every key that starts with 'P' (power)."""
+    found = {}
+    try:
+        n = int(rd(f"{SMC}/key_count", 0))
+    except ValueError:
+        return found
+    for i in range(n):
+        try:
+            wr(f"{SMC}/key_at_index", i)
+        except OSError:
+            break
+        name = rd(f"{SMC}/key_at_index_name")
+        if name and name[0] == "P":
+            found[name] = i
+    return found
+
+
+def smc_read_index(i):
+    wr(f"{SMC}/key_at_index", i)
+    typ = (rd(f"{SMC}/key_at_index_type") or "").strip()
+    with open(f"{SMC}/key_at_index_data", "rb") as f:
+        raw = f.read()
+    return smc_decode(typ, raw)
+
+
+def rapl_domains():
+    out = {}
+    for d in sorted(glob.glob(f"{RAPL}/intel-rapl:*")):
+        name = rd(f"{d}/name")
+        if name in RAPL_DOMAINS and os.path.exists(f"{d}/energy_uj"):
+            out[RAPL_DOMAINS[name]] = (d, int(rd(f"{d}/max_energy_range_uj", 0) or 0))
+    return out
+
+
+def power_loop():
+    index = smc_power_index()
+    wanted = {k: index[k] for k in SMC_POWER_KEYS if k in index}
+    domains = rapl_domains()
+    last = {}
+    with PLOCK:
+        POWER["smc_keys_found"] = sorted(index)[:60]
+    while True:
+        t0 = time.time()
+        rapl, smc = {}, {}
+        for key, (d, span) in domains.items():
+            try:
+                e = int(rd(f"{d}/energy_uj"))
+            except (TypeError, ValueError):
+                continue
+            if key in last:
+                pe, pt = last[key]
+                de = e - pe if e >= pe else e + span - pe  # counter wrapped
+                if t0 > pt:
+                    rapl[key] = de / 1e6 / (t0 - pt)
+            last[key] = (e, t0)
+        for key, i in wanted.items():
+            try:
+                v = smc_read_index(i)
+            except OSError:
+                continue
+            if v is not None and 0.0 <= v <= 400.0:  # sanity: a notebook never draws more than that
+                smc[key] = round(v, 2)
+        with PLOCK:
+            POWER["rapl"] = {k: round(v, 2) for k, v in rapl.items() if 0 <= v < 400}
+            POWER["smc"] = smc
+            POWER["t"] = t0
+        time.sleep(max(0.1, 1.0 - (time.time() - t0)))
+
+
+def status():
+    res = []
+    for i in fans():
+        lo, hi = limits(i)
+        res.append({"id": i, "min": lo, "max": hi, "rpm": int(rd(f"{SMC}/fan{i}_input", 0)),
+                    "manual": rd(f"{SMC}/fan{i}_manual") == "1", "state": STATE.get(i, {"mode": "auto"})})
+    return {"ok": True, "fans": res, "cpu_temp": cpu_temp(), "turbo": turbo_enabled()}
+
+
+def handle(req):
+    cmd = req.get("cmd")
+    if cmd == "status":
+        return status()
+    if cmd == "power":
+        with PLOCK:
+            return {"ok": True, **{k: (dict(v) if isinstance(v, dict) else v) for k, v in POWER.items()}}
+    if cmd == "turbo":
+        enabled = req.get("enabled")
+        if not isinstance(enabled, bool):
+            return {"ok": False, "error": "bad turbo value"}
+        if turbo_enabled() is None:
+            return {"ok": False, "error": "turbo no controlable en esta CPU"}
+        try:
+            with LOCK:
+                return {"ok": True, "turbo": set_turbo(enabled)}
+        except OSError as e:
+            return {"ok": False, "error": str(e)[:80]}
+    if cmd == "auto_all":
+        with LOCK:
+            for i in fans():
+                set_auto(i)
+        return {"ok": True}
+    if cmd == "set":
+        i = req.get("fan")
+        mode = req.get("mode")
+        if i not in fans() or mode not in ("auto", "manual", "curve"):
+            return {"ok": False, "error": "bad fan/mode"}
+        with LOCK:
+            if mode == "auto":
+                set_auto(i)
+            elif mode == "manual":
+                rpm = req.get("rpm")
+                if not isinstance(rpm, (int, float)):
+                    return {"ok": False, "error": "bad rpm"}
+                STATE[i] = {"mode": "manual", "rpm": set_rpm(i, rpm)}
+            else:
+                c = req.get("curve", {})
+                try:
+                    curve = {k: float(c[k]) for k in ("tmin", "tmax", "pmin", "pmax")}
+                except (KeyError, TypeError, ValueError):
+                    return {"ok": False, "error": "bad curve"}
+                if not (0 <= curve["tmin"] < curve["tmax"] <= 110 and 0 <= curve["pmin"] <= curve["pmax"] <= 100):
+                    return {"ok": False, "error": "bad curve range"}
+                STATE[i] = {"mode": "curve", "curve": curve}
+        return {"ok": True}
+    return {"ok": False, "error": "unknown cmd"}
+
+
+def allowed(uid):
+    if uid == 0:
+        return True
+    try:
+        g = grp.getgrnam(GROUP)
+        u = pwd.getpwuid(uid)
+        return u.pw_name in g.gr_mem or u.pw_gid == g.gr_gid
+    except KeyError:
+        return False
+
+
+class Handler(socketserver.StreamRequestHandler):
+    def handle(self):
+        creds = self.request.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+        _pid, uid, _gid = struct.unpack("3i", creds)
+        if not allowed(uid):
+            self.wfile.write(b'{"ok": false, "error": "forbidden"}\n')
+            return
+        self.request.settimeout(3)
+        try:
+            line = self.rfile.readline(4096)
+            resp = handle(json.loads(line))
+        except Exception as e:
+            resp = {"ok": False, "error": str(e)[:80]}
+        self.wfile.write((json.dumps(resp) + "\n").encode())
+
+
+def control_loop():
+    while True:
+        time.sleep(2)
+        with LOCK:
+            t = cpu_temp()
+            if t is not None and t >= EMERGENCY_C:
+                # Very hot: never slow the fans down. Spin everything at max, keep the user's mode so it
+                # resumes by itself once the CPU cools down.
+                for i in fans():
+                    try:
+                        set_rpm(i, limits(i)[1])
+                    except OSError:
+                        pass
+                continue
+            for i, st in list(STATE.items()):
+                try:
+                    if st["mode"] == "manual":
+                        set_rpm(i, st["rpm"])  # re-assert: firmware may take control back
+                    elif st["mode"] == "curve" and t is not None:
+                        c = st["curve"]
+                        f = max(0.0, min(1.0, (t - c["tmin"]) / (c["tmax"] - c["tmin"])))
+                        pct = c["pmin"] + (c["pmax"] - c["pmin"]) * f
+                        lo, hi = limits(i)
+                        set_rpm(i, lo + (hi - lo) * pct / 100.0)
+                except OSError:
+                    pass
+
+
+def shutdown(*_):
+    with LOCK:
+        for i in fans():
+            set_auto(i)
+    try:
+        os.unlink(SOCK)
+    except OSError:
+        pass
+    sys.exit(0)
+
+
+def main():
+    if not SMC:
+        print("monitor-t2-fand: no applesmc fan interface found", file=sys.stderr)
+        sys.exit(1)
+    os.makedirs(SOCK_DIR, exist_ok=True)
+    try:
+        os.unlink(SOCK)
+    except OSError:
+        pass
+    for s in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(s, shutdown)
+    for i in fans():
+        set_auto(i)
+    srv = socketserver.ThreadingUnixStreamServer(SOCK, Handler)
+    os.chmod(SOCK, 0o666)  # access is enforced per-connection through SO_PEERCRED
+    threading.Thread(target=control_loop, daemon=True).start()
+    threading.Thread(target=power_loop, daemon=True).start()
+    srv.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

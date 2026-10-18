@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Monitor de Recursos T2
+GenericName=System Monitor
+Comment=Monitor de sistema en la barra: CPU, GPU, RAM, disco, red, batería y ventiladores
+Exec=monitor-t2 --settings
+Icon=monitor-t2
+Categories=System;Monitor;
+Terminal=false
+StartupNotify=false

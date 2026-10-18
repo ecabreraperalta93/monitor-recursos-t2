@@ -1,0 +1,7 @@
+post_install() {
+  systemctl daemon-reload
+  systemctl enable --now monitor-t2-fand.service || true
+  gtk-update-icon-cache -q -t -f usr/share/icons/hicolor 2>/dev/null || true
+}
+post_upgrade() { systemctl restart monitor-t2-fand.service || true; }
+pre_remove() { systemctl disable --now monitor-t2-fand.service || true; }

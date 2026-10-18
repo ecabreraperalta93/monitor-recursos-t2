@@ -1,0 +1,12 @@
+[Unit]
+Description=Monitor de Recursos T2 fan control daemon
+ConditionPathExistsGlob=/sys/class/hwmon/hwmon*/device/fan1_manual
+
+[Service]
+ExecStart=/usr/lib/monitor-t2/monitor-t2-fand
+Restart=on-failure
+# On stop the daemon hands the fans back to the firmware (automatic mode)
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
